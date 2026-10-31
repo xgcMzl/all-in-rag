@@ -1,3 +1,8 @@
+[tool.uv]
+# 必须使用 uv 自己管理的 CPython：本机 Anaconda 的 Python 3.12 作为 venv 基础时，
+# onnxruntime 等原生扩展开头导入即触发 0xC0000005 (access violation) 崩溃。
+python-preference = "only-managed"
+
 [project]
 name = "all-in-rag"
 version = "0.1.0"

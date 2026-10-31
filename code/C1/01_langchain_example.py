@@ -19,6 +19,7 @@ docs = loader.load()
 
 # 文本分块
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=500,chunk_overlap=50)
+# text_splitter = RecursiveCharacterTextSplitter()
 
 chunks = text_splitter.split_documents(docs)
 
@@ -73,4 +74,12 @@ retrieved_docs = vectorstore.similarity_search(question, k=3)
 docs_content = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
 answer = llm.invoke(prompt.format(question=question, context=docs_content))
-print(answer)
+
+# 注意：llm.invoke() 返回的不是纯字符串，而是一个 AIMessage 对象，包含：
+#   content           —— 模型回答的正文（我们只要这个）
+#   response_metadata —— token 用量、模型名、finish_reason 等
+#   usage_metadata    —— 输入/输出 token 统计
+#   id                —— 本次调用的唯一标识
+# 直接 print(answer) 会把所有字段都打出来，很吵；
+# 想只看正文，就取 .content。
+print(answer.content)
