@@ -2,6 +2,12 @@
 # 必须使用 uv 自己管理的 CPython：本机 Anaconda 的 Python 3.12 作为 venv 基础时，
 # onnxruntime 等原生扩展开头导入即触发 0xC0000005 (access violation) 崩溃。
 python-preference = "only-managed"
+# 锁定 mistralai 到 1.x：mistralai 2.0 起包结构改为 mistralai.client.*，
+# 不再有顶层 mistralai/__init__.py 和 mistralai.models，而
+# llama_index.finetuning.mistralai 仍在用 `from mistralai import Mistral`
+# 和 `from mistralai.models import ...` 这套 1.x API，
+# 装 2.x/3.x 会让 `llama_index.experimental` 导入链直接报 ImportError。
+constraint-dependencies = ["mistralai>=1,<2"]
 
 [project]
 name = "all-in-rag"
@@ -60,4 +66,5 @@ dependencies = [
     "lazy-loader==0.4",
     "pyarrow==20.0.0",
     "hf-xet>=1.7.1",
+    "pandas-stubs~=2.2.3",
 ]
