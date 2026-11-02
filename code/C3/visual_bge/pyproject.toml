@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visual-bge"
+version = "0.1.0"
+description = "Visualized-BGE：在 BGE 文本模型上增加视觉分支的多模态编码器"
+requires-python = ">=3.9"
+dependencies = [
+    "torch",
+    "torchvision",
+    "timm",
+    "einops",
+    "ftfy",
+]
+
+# 真正的代码在 ./visual_bge/ 下（modeling.py + eva_clip/），
+# eva_clip 是普通子包，没有更深一层的子包，所以列两项即可
+[tool.setuptools]
+packages = ["visual_bge", "visual_bge.eva_clip"]
+
+# eva_clip 运行时需要读这些数据文件，必须一起打包，
+# 否则非 editable 安装后会报 FileNotFoundError
+[tool.setuptools.package-data]
+"visual_bge.eva_clip" = ["*.txt.gz", "model_configs/*.json"]
