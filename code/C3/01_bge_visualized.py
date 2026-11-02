@@ -1,5 +1,5 @@
 import torch
-from visual_bge.visual_bge.modeling import Visualized_BGE
+from visual_bge.modeling import Visualized_BGE
 
 model = Visualized_BGE(model_name_bge="BAAI/bge-base-en-v1.5",
                       model_weight="../../models/bge/Visualized_base_en_v1.5.pth")

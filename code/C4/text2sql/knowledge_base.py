@@ -8,7 +8,7 @@ from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 class SimpleKnowledgeBase:
     """知识库"""
     
-    def __init__(self, milvus_uri: str = "http://localhost:19530"):
+    def __init__(self, milvus_uri: str = "http://106.55.165.169:19530"):
         self.milvus_uri = milvus_uri
         self.client = MilvusClient(uri=milvus_uri)
         self.embedding_function = BGEM3EmbeddingFunction(use_fp16=False, device="cpu")

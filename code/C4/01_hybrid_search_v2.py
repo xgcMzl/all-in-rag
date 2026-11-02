@@ -9,7 +9,7 @@ from pymilvus import connections, MilvusClient, FieldSchema, CollectionSchema, D
 
 # 1. 初始化设置
 COLLECTION_NAME = "dragon_siglip_demo"
-MILVUS_URI = "http://localhost:19530"  # 服务器模式
+MILVUS_URI = "http://http://106.55.165.169/:19530"  # 服务器模式
 DATA_PATH = "../../data/C4/metadata/dragon.json"  # 相对路径
 BATCH_SIZE = 50
 

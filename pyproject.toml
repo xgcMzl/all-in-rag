@@ -8,6 +8,13 @@ python-preference = "only-managed"
 # 和 `from mistralai.models import ...` 这套 1.x API，
 # 装 2.x/3.x 会让 `llama_index.experimental` 导入链直接报 ImportError。
 constraint-dependencies = ["mistralai>=1,<2"]
+# 强制 brotli >= 1.2.1：aiohttp 3.14 解压时调用 Decompressor.process(data, max_length)，
+# 而 brotli 1.1.0 的 process() 只接受 1 个参数 -> TypeError 被 aiohttp 吞掉后
+# 报成 "400, message: Can not decode content-encoding: br"，
+# 导致 bilibili_api（aiohttp 客户端）拉取视频信息必然失败。
+# bilibili-api-python 自己把 brotli 上限定在 <1.2，但 1.2.1 完全向下兼容
+# （decompress() / process(data) 都保留），所以这里用 override 覆盖它的上界。
+override-dependencies = ["brotli>=1.2.1"]
 
 [project]
 name = "all-in-rag"
@@ -67,4 +74,12 @@ dependencies = [
     "pyarrow==20.0.0",
     "hf-xet>=1.7.1",
     "pandas-stubs~=2.2.3",
+    "flagembedding>=1.3.3",
+    "scipy-stubs~=1.18.1",
+    # 多模态图文检索用的本地包（源码在 code/C3/visual_bge），
+    # 声明成路径依赖后 `uv sync` 不会再把手动安装的它当"多余包"删掉
+    "visual-bge",
 ]
+
+[tool.uv.sources]
+visual-bge = { path = "code/C3/visual_bge", editable = true }

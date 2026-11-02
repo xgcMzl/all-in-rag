@@ -333,8 +333,8 @@ rerank = RRFRanker(k=60)
 # 每个 AnnSearchRequest 描述"一路检索"：用哪个向量、查哪个字段、什么参数、取几条。
 # 注意：混合检索里过滤条件要写在各自的请求里（本 Demo 没加 expr，
 # 所以这里的混合检索结果是【全库】的，范围比前面两次更大）
-dense_req = AnnSearchRequest([dense_vec], "dense_vector", search_params, limit=top_k)
-sparse_req = AnnSearchRequest([sparse_vec], "sparse_vector", search_params, limit=top_k)
+dense_req = AnnSearchRequest([dense_vec], "dense_vector", search_params, limit=top_k,expr=search_filter)
+sparse_req = AnnSearchRequest([sparse_vec], "sparse_vector", search_params, limit=top_k,expr=search_filter)
 
 # 执行混合搜索
 # 把两路请求一起交给 Milvus，由它在服务端并行执行并用 rerank 融合，

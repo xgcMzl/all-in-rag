@@ -2,7 +2,7 @@ import json
 import os
 from tqdm import tqdm
 import torch
-from visual_bge.visual_bge.modeling import Visualized_BGE
+from visual_bge.modeling import Visualized_BGE
 from pymilvus import connections, MilvusClient, FieldSchema, CollectionSchema, DataType, Collection, AnnSearchRequest, RRFRanker
 from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 import numpy as np

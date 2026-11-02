@@ -18,7 +18,7 @@ import os
 from tqdm import tqdm
 from glob import glob
 import torch
-from visual_bge.visual_bge.modeling import Visualized_BGE
+from visual_bge.modeling import Visualized_BGE
 from pymilvus import MilvusClient, FieldSchema, CollectionSchema, DataType
 import numpy as np
 import cv2

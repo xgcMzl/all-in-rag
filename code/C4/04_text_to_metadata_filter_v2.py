@@ -106,7 +106,7 @@ for query in queries:
 JSON指令:"""
     
     response = client.chat.completions.create(
-        model="deepseek-chat",
+        model="deepseek-flash",
         messages=[
             {"role": "user", "content": prompt}
         ],

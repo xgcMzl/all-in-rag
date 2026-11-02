@@ -8,7 +8,7 @@ from .sql_generator import SimpleSQLGenerator
 class SimpleText2SQLAgent:
     """Text2SQL代理"""
     
-    def __init__(self, milvus_uri: str = "http://localhost:19530", api_key: str = None):
+    def __init__(self, milvus_uri: str = "http://106.55.165.169:19530", api_key: str = None):
         """初始化代理"""
         self.knowledge_base = SimpleKnowledgeBase(milvus_uri)
         self.sql_generator = SimpleSQLGenerator(api_key)
