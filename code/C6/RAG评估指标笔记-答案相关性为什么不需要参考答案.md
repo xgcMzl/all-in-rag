@@ -15,7 +15,8 @@
 7. [DatasetGenerator 为什么还要生成参考答案？](#七那-datasetgenerator-为什么还要生成参考答案)
 8. [对应代码位置速查](#八对应代码位置速查)
 9. [**为什么 RAG 三元组不包含答案的准确性？**](#九为什么-rag-三元组不包含答案的准确性)
-10. [附：想加「正确性」评估时的接法](#附想加正确性评估时的接法)
+10. [本项目的局限性与使用建议](#十本项目的局限性与使用建议)
+11. [附：想加「正确性」评估时的接法](#附想加正确性评估时的接法)
 
 ---
 
@@ -60,6 +61,8 @@
 | "This chapter is part of the IPCC Sixth Assessment Report." | 话题相关，但没回答「是谁」 | **1/2 = 0.5** | ❌ 不需要 |
 | "Python is a popular programming language." | 完全离题 | **0/2 = 0.0** | ❌ 不需要 |
 
+> 表中分数是**示意值**，用于说明打分逻辑，**不是本项目的实测结果**。
+
 **关键点：上面三个判断，裁判根本不需要知道真实作者是谁。**
 它只需要判断「这段文字像不像在回答这个问题」。
 
@@ -103,6 +106,8 @@ async def aevaluate(self, query=None, response=None, contexts=None, ...):
 | `AnswerRelevancy` | **2/2，满分** | 它确实在正面回答「是谁」 |
 | `Correctness` | **0 分** | 人名全错，必须对照 `reference` 才能发现 |
 
+> 表中分数是**示意值**，用于说明指标差异，**不是实测结果**。
+
 **这就是两者的本质区别：切题 ≠ 正确。**
 
 所以 `AnswerRelevancy` 天生防不了幻觉——一个自信但错误的回答，在这个指标上照样满分。防幻觉是 `FaithfulnessEvaluator` 的职责。
@@ -123,6 +128,8 @@ async def aevaluate(self, query=None, response=None, contexts=None, ...):
 | 2 | 巴黎是法国最大的城市，也是著名的旅游胜地。 | ⚠️ 相关，但没直接回答「首都是谁」 | — | **1 分** | — |
 | 3 | 法国的首都是马赛。 | ✅ 正面回答，句式完全契合 | ❌ 事实错误 | **2 分（满分）** | **0 分** |
 
+> 表中分数是**示意值**（按评分规则推演），**不是实测结果**；LLM 裁判的实际给分会有波动。
+
 看第 3 行：**回答越切题，越说明不了它是对的。**
 
 `AnswerRelevancyEvaluator` 只问两件事：
@@ -140,18 +147,22 @@ async def aevaluate(self, query=None, response=None, contexts=None, ...):
 
 ## 五、完整的数据流
 
-四个指标各自吃不同的输入，看清楚谁用谁：
+下图只画四个代表性指标，重点在区分「要不要 reference」；六项完整对照见第六节。
 
 ```text
                     ┌─→ contexts ──┬─→ ContextRelevancy  (query + contexts)
                     │              │
 query ─→ 检索器 ────┘              │
-   │                               └─→ Faithfulness      (query + response + contexts)
+   │                               └─→ Faithfulness      (response + contexts)   ← query 不参与判定
    │
    └─→ 生成 ─→ response ─┬─→ AnswerRelevancy  (query + response)            ← 不碰 reference
                          │
                          └─→ Correctness      (query + response + reference) ← 唯一需要 reference 的
 ```
+
+> 注：`FaithfulnessEvaluator` 虽然形参里有 `query`，但**判定时并不使用它**——
+> 源码中是 `query_engine.aquery(response)`，即只拿 response 去和 contexts 比对。
+> `query` 仅被回填进 `EvaluationResult.query` 供追溯。
 
 `response` 是**你的系统现场生成的**，每道题都不一样；
 `reference` 是**数据集里写死的**。
@@ -164,12 +175,12 @@ query ─→ 检索器 ────┘              │
 
 | 类型 | 需要参考答案？ | LlamaIndex 中的类 | 输出字段 | 用来干什么 | 对应三元组环节 |
 |---|---|---|---|---|---|
-| 无参考（reference-free） | ❌ | `FaithfulnessEvaluator` | `passing` (True/False) | **查幻觉**：回答的每句话是否都能在检索到的原文里找到依据。回答"听着很对但文档里没说"时，这里会挂。 | **Groundedness**（扎根性） |
-| 无参考（reference-free） | ❌ | `RelevancyEvaluator` | `passing` (YES/NO) | **查串味**：回答是否与检索到的上下文一致。注意名字有误导——它对比的是「回答 vs 上下文」，不评价「问题有没有被回答」，和忠实度高度重叠。 | **Groundedness**（扎根性的弱化版：只给 YES/NO） |
+| 无参考（reference-free） | ❌ | `FaithfulnessEvaluator` | `passing` + `score`(0/1) | **查幻觉**：整段回答是否被检索内容支撑。口径较宽松——只要上下文中有任意内容支持回答即判 YES（提示词原文：`Answer YES if any of the context supports the information, even if most of the context is unrelated`），不会逐句核查。 | **Groundedness**（扎根性） |
+| 无参考（reference-free） | ❌ | `RelevancyEvaluator` | `passing` + `score`(0/1) | **查串味**：回答是否与检索到的上下文一致。注意名字有误导——它对比的是「回答 vs 上下文」，不评价「问题有没有被回答」，和忠实度高度重叠。 | **Groundedness**（扎根性的弱化版：只给 YES/NO；本笔记按提示词语义归类，非官方映射） |
 | 无参考（reference-free） | ❌ | `AnswerRelevancyEvaluator` | `score` (0~1) | **查答非所问**：回答是否切中问题本身。完全不看上下文、也不判断对错，只判断"这段文字像不像在回答这个问题"。 | **Answer Relevance**（答案相关性） |
 | 无参考（reference-free） | ❌ | `ContextRelevancyEvaluator` | `score` (0~1) | **查检索质量**：检索回来的片段是否切题、是否足以回答问题。检索坏了，后面模型再强也救不回来，所以这项要单独盯。 | **Context Relevance**（上下文相关性） |
-| **有参考（reference-based）** | ✅ | **`CorrectnessEvaluator`** | `score` (0~1) | **查对不对**：把回答与参考答案对比打分。用于版本验收——上线前确认"答案确实是对的"，适合离线回归测试。 | |
-| **有参考（reference-based）** | ✅ | **`SemanticSimilarityEvaluator`** | `score` + `passing` | **查像不像**：用向量算回答与参考答案的语义相似度。便宜、快，适合大批量初筛；但只测"意思接不接近"，推理错了但措辞接近照样高分。 | |
+| **有参考（reference-based）** | ✅ | **`CorrectnessEvaluator`** | `score` **（1~5 原始分）** + `passing` | **查对不对**：把回答与参考答案对比打分，用于版本验收。⚠️ 源码**不做归一化**：`score` 就是 1~5 的原始分，`passing = score >= 4.0`，统计时需自行除以 5。 | |
+| **有参考（reference-based）** | ✅ | **`SemanticSimilarityEvaluator`** | `score` (0~1) + `passing` | **查像不像**：用向量算回答与参考答案的语义相似度（默认阈值 0.8）。便宜、快，适合大批量初筛；但只测"意思接不接近"，推理错了但措辞接近照样高分。 | |
 
 > **空白**表示该指标不对应 RAG 三元组的任何环节。
 > 三元组只问三件事——「检索的切题吗」「回答有依据吗」「回答切题吗」，**三者全部不涉及标准答案**；
@@ -185,7 +196,8 @@ query ─→ 检索器 ────┘              │
 | —（三元组没有） | 回答到底对不对？ | `CorrectnessEvaluator`、`SemanticSimilarityEvaluator` |
 
 > 注意：`passing` 型指标算**通过率**，`score` 型指标算**平均分**。
-> `AnswerRelevancyEvaluator` 不设置 `passing`（值为 `None`），直接混用会抛 `TypeError`。
+> `AnswerRelevancyEvaluator` 和 `ContextRelevancyEvaluator` **都不设置 `passing`**（值为 `None`），
+> 直接套用通过率统计会抛 `TypeError`，必须用平均分函数。
 
 ### 怎么组合用
 
@@ -202,19 +214,29 @@ query ─→ 检索器 ────┘              │
 因为 `agenerate_dataset_from_nodes()` 内部调用时传了 `generate_response=True`，它顺手把参考答案也生成了，存进 `QueryResponseDataset.responses` 字段。
 
 **这份数据是有备无患的**：你以后想加 `CorrectnessEvaluator` 就直接能用。
-但当前用的三个指标（忠实度、一致性、答案相关性）确实一个都用不上它。
+但当前脚本用的三元组三个指标（上下文相关性、忠实度、答案相关性）确实一个都用不上它。
 
 ```python
-# 问题：Dict[str, str]  → 必须 .values() 取文本
-queries = list(response_eval_dataset.queries.values())
-
-# 参考答案：同样是 Dict，.values() 顺序与 queries 一致，可按下标对齐
-references = list(response_eval_dataset.responses.values())
+# 问题和参考答案都是 Dict[str, str]（"题目ID" -> 文本）
+# 按下标（顺序）对齐不可靠；按「题目ID」配对才安全
+pairs = [
+    (qid, q, response_eval_dataset.responses.get(qid, ""))
+    for qid, q in response_eval_dataset.queries.items()
+]
+queries = [q for _, q, _ in pairs]
+references = [ref for _, _, ref in pairs]
 ```
 
-> ⚠️ 坑点：`QueryResponseDataset.queries` 是 `Dict[str, str]`（"题目ID" -> "问题文本"），不是 `list`。
+> ⚠️ 坑点一：`QueryResponseDataset.queries` 是 `Dict[str, str]`（"题目ID" -> "问题文本"），不是 `list`。
 > `BatchEvalRunner.aevaluate_queries` 内部是 `for query in queries`，
 > 直接传 dict 遍历到的是 **key（题目ID）**，会拿 UUID 字符串去检索提问，分数全是垃圾。
+>
+> ⚠️ 坑点二：两个 dict 的 `.values()` 顺序在当前文件里恰好一致，但这是**数据的巧合，不是 API 保证**。
+> 换数据集或增删条目后，按顺序配对可能错位，务必按 key 配对。
+>
+> ⚠️ 坑点三：`DatasetGenerator` 偶尔会把整段生成输出当成一道题存进来
+> （形如 `Based on the provided context..., here are N questions...`）。
+> 这类脏数据会同时拉低三个指标，评估前要过滤掉（当前脚本的 `is_valid_query()` 负责这件事）。
 
 ---
 
@@ -224,13 +246,15 @@ references = list(response_eval_dataset.responses.values())
 
 | 行号 | 内容 |
 |---|---|
-| 215 | `evaluators = {...}` 三元组三个评估器的注册 |
-| 227 | `queries = list(...queries.values())` 取问题文本 |
-| 232 | `references = list(...responses.values())` 取参考答案（当前未使用，为 `Correctness` 预留） |
-| 272 | `calc_pass_rate()` 统计 passing 型指标 |
-| 283 | `calc_avg_score()` 统计 score 型指标 |
-| 297–304 | 两个方案的三项分数计算 |
-| 321 | 三维度对比 |
+| 213 | `evaluators = {...}` 三元组三个评估器的注册 |
+| 229 | `is_valid_query()` 脏数据过滤规则 |
+| 240–248 | 按「题目ID」配对、过滤、拆出 `queries` / `references` |
+| 289 | `calc_pass_rate()` 统计 passing 型指标 |
+| 300 | `calc_avg_score()` 统计 score 型指标 |
+| 314–321 | 两个方案的三项分数计算 |
+| 338 | 三维度对比 |
+
+> 行号以修订时的脚本版本为准，改代码后会漂移，建议用搜索而不是行号定位。
 
 ---
 
@@ -293,9 +317,13 @@ references = list(response_eval_dataset.responses.values())
 
 | 框架 | 定位 | 是否含 correctness |
 |---|---|---|
-| **TruLens RAG Triad** | 在线监控 / 归因诊断 | ❌ |
-| **RAGAS** | 离线评测套件 | ✅ `answer_correctness`、`answer_semantic_similarity` |
-| **LlamaIndex** | 两者都提供 | ✅ `CorrectnessEvaluator`、`SemanticSimilarityEvaluator` |
+| **TruLens RAG Triad** | 在线监控 / 归因诊断 | ❌（定义见 TruLens 官方文档） |
+| **RAGAS** | 离线评测套件 | ✅ `answer_correctness`、`answer_semantic_similarity`（指标名**需核实**：本机未安装 RAGAS，无法本地验证） |
+| **LlamaIndex** | 两者都提供 | ✅ `CorrectnessEvaluator`、`SemanticSimilarityEvaluator`（已对照 `0.12.52` 源码核验） |
+
+> 外部框架信息来自公开文档，未在本地环境安装验证：
+> - TruLens RAG Triad：<https://www.trulens.org/getting_started/core_concepts/rag_triad/>
+> - RAGAS 指标：<https://docs.ragas.io/>（`answer_correctness` 的确切名称与打分口径请以对应版本文档为准）
 
 RAGAS 保留 correctness，是因为它面向**离线回归测试**——有 golden set、跑一次要几分钟、用来做版本对比。
 TruLens 的三元组面向**线上持续监控**——每条请求都要立刻打分。
@@ -315,15 +343,54 @@ TruLens 的三元组面向**线上持续监控**——每条请求都要立刻�
 
 ---
 
+## 十、本项目的局限性与使用建议
+
+### 10.1 数据质量
+
+- `DatasetGenerator` 自动生成的数据集可能残留未解析干净的条目（整段生成输出被当成一道题）。当前脚本的 `is_valid_query()` 已做过滤。
+- 自动生成的参考答案本身也可能有误——这正是不能无条件依赖 `CorrectnessEvaluator` 的原因之一。
+- 实测：当前 `c6_response_eval_dataset.json` 共 13 条，过滤后 **12 条有效**。
+
+### 10.2 对比实验存在混杂变量
+
+两种方案的上下文注入量并不相同：
+
+| 方案 | 单个 Node 体量 | top_k |
+|---|---|---|
+| 句子窗口 | 目标句 + 前后各 3 句 | 2 |
+| 常规分块 | `chunk_size=512` token | 2 |
+
+而 Context Relevance 与 Faithfulness **都对上下文长度敏感**——文本越多越容易覆盖问题，也越容易混入无关内容。因此两项分数的差异**不能全部归因于"检索粒度更优"**。
+
+**建议**：记录两种方案每次实际注入的 token 数；或固定总 token 预算后再比较。
+
+### 10.3 样本量偏小
+
+当前有效样本 **n=12**，比例类指标（通过率、平均分）的置信区间很宽，几道题的差距可能只是噪声。输出中的"领先/落后"应理解为趋势，而非统计意义上的显著差异。
+
+**建议**：至少 50 条以上再讨论"优于"；或对同一批题重复评估取均值。
+
+### 10.4 评分稳定性
+
+LLM 裁判不是确定性的，相同输入重复评估分数也可能不同（即使 `temperature=0.1`）。两个方案的对比应在**同一批次**内完成，避免分批跑引入系统性偏差。
+
+### 10.5 结论措辞
+
+本笔记与脚本统一使用"高于 / 领先"，不使用"显著优于"——当前样本量不支持显著性判断。
+
+---
+
 ## 附：想加「正确性」评估时的接法
 
 ```python
 from llama_index.core.evaluation import CorrectnessEvaluator
 
 correctness_evaluator = CorrectnessEvaluator(llm=Settings.llm)
+
+# 在现有三元组基础上追加 correctness（key 名与脚本中 evaluators 的写法保持一致）
 evaluators = {
+    "context_relevancy": context_relevancy_evaluator,
     "faithfulness": faithfulness_evaluator,
-    "relevancy": relevancy_evaluator,
     "answer_relevancy": answer_relevancy_evaluator,
     "correctness": correctness_evaluator,
 }
@@ -338,4 +405,16 @@ results = await runner.aevaluate_queries(
 )
 ```
 
-`CorrectnessEvaluator` 默认满分 5，`score` 已除以阈值归一化到 0~1，用 `calc_avg_score` 统计即可。
+⚠️ **`CorrectnessEvaluator` 的分数不是 0~1**。源码（`correctness.py`）直接返回裁判给的原始分，
+`score` 范围是 **1~5**，`passing` 判定为 `score >= 4.0`，全程没有除以阈值。
+所以不能直接丢给 `calc_avg_score` 再用 `:.1%` 打印（会得到 450% 这种结果），需要自己归一化：
+
+```python
+raw_scores = [r.score for r in results["correctness"] if r.score is not None]
+avg_1_to_5 = sum(raw_scores) / len(raw_scores)
+print(f"正确性: {avg_1_to_5 / 5.0:.1%}")   # 除以 5 换算成百分比
+```
+
+> 另：`CorrectnessEvaluator` 的 `reference` 允许缺省，缺省时提示词会填
+> `(NO REFERENCE ANSWER SUPPLIED)`，但此时它退化成"相关性 + 大致正确性"的混合判断，
+> 不建议作为验收依据。

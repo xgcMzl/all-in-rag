@@ -14,12 +14,16 @@
 # 为什么需要评估？
 #   改了切分方式、检索数量、提示词之后，回答到底变好了还是变差了？
 #   靠肉眼看几条例子是不靠谱的，所以需要「用大模型给大模型的回答打分」（LLM-as-a-judge）。
-#   本脚本用两个指标：
-#     - Faithfulness（忠实度）：回答里的每一句话，是否都能在检索到的原文片段中找到依据？
-#                               （衡量有没有幻觉）
-#     - Relevancy（相关性）   ：回答是否真的切题、真正回答了用户的问题？
-#                               （衡量有没有跑题）
-#   两个指标都是「通过/不通过」（passing 为 True/False），最后计算通过率。
+#
+# 本脚本采用业界标准的「RAG 三元组」（RAG Triad），三个指标各管一段流水线：
+#   ① Context Relevance（上下文相关性）—— 检索环节：检索回来的片段切题吗？够用来回答吗？
+#   ② Groundedness     （扎根性/忠实度）—— 生成环节：整段回答是否被检索内容支撑？
+#                                          （衡量有没有幻觉）
+#                                          注意 LlamaIndex 的口径比较宽松：只要上下文里
+#                                          有任意内容支持回答，就判通过，不会逐句核查。
+#   ③ Answer Relevance （答案相关性）  —— 端到端  ：回答本身切中用户的问题吗？
+#                                          （衡量有没有答非所问）
+#   三者都不需要参考答案，所以每一条 query 都能算，适合在线监控。
 # =============================================================================
 
 # os：用来读环境变量（API Key）、判断文件是否存在（os.path.exists）。
@@ -45,23 +49,23 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 # MetadataReplacementPostProcessor：后处理器。句子窗口检索的关键一步：
 #   检索时用句子向量匹配，但真正喂给大模型时，把句子替换成它前后的「窗口」文本，给出更完整的上下文。
 from llama_index.core.postprocessor import MetadataReplacementPostProcessor
-# 评估相关组件：
-#   FaithfulnessEvaluator    ：忠实度评估器，检查回答是否有检索内容作为依据。
-#   RelevancyEvaluator       ：名字叫「相关性」，但看它内部的提示词是
-#                              "response is in line with the context information"，
-#                              实际测的是「回答与检索上下文是否一致」，输出 YES/NO（passing）。
-#                              它和忠实度高度重叠，并不评价「回答是否切题」。
-#   AnswerRelevancyEvaluator ：真正的「答案相关性」评估器。只把 query 和 response 交给裁判
-#                              （源码里显式 del contexts，不看上下文），输出 0~1 的分数。
+# 评估相关组件（正好对应 RAG 三元组）：
+#   ContextRelevancyEvaluator：① 上下文相关性。只把 query 和 contexts 交给裁判，
+#                              问「检索到的片段是否切题、是否足以回答问题」，输出 0~1。
+#   FaithfulnessEvaluator    ：② 扎根性/忠实度。把 contexts 和 response 交给裁判，
+#                              问「回答是否被上下文支撑」，输出 YES/NO（passing）。
+#   AnswerRelevancyEvaluator ：③ 答案相关性。只把 query 和 response 交给裁判
+#                              （源码里显式 del contexts，不看上下文），输出 0~1。
 #   BatchEvalRunner          ：批量评估器，能并发跑多条问题 + 多个评估器（workers 控制并发数）。
+#
+# 注：LlamaIndex 里还有一个 RelevancyEvaluator，名字像「相关性」，实际测的是
+#     「回答与上下文是否一致」（YES/NO），和忠实度高度重叠，不属于三元组，本脚本不再使用。
 from llama_index.core.evaluation import (
+    ContextRelevancyEvaluator,
     FaithfulnessEvaluator,
-    RelevancyEvaluator,
     AnswerRelevancyEvaluator,
     BatchEvalRunner,
 )
-# get_results_df：把评估结果转成 pandas DataFrame，方便查看。本脚本里 import 了但没用，属于遗留代码。
-from llama_index.core.evaluation.eval_utils import get_results_df
 # DatasetGenerator  ：自动生成评估数据集（它会读你的文档，自动出题 + 给标准答案参考答案）。
 # QueryResponseDataset：评估数据集对象，包含 queries（问题列表）等字段，可以存成 JSON 复用。
 from llama_index.core.evaluation import DatasetGenerator, QueryResponseDataset
@@ -161,10 +165,9 @@ async def main():
             MetadataReplacementPostProcessor(target_metadata_key="window")
         ],
     )
-    # as_retriever：只保留「检索」部分（不生成回答），返回 Node 列表。
-    #   本脚本评估的是 query_engine（完整回答），retriever 定义了但实际没用到，
-    #   留着是为了让你知道两种用法：要检索结果用 retriever，要完整回答用 query_engine。
-    sentence_retriever = sentence_index.as_retriever(similarity_top_k=2)
+    # 补充说明：如果只想拿「检索结果」而不让 LLM 生成回答，可以用
+    #   sentence_index.as_retriever(similarity_top_k=2)
+    # 本脚本评估的是完整回答，所以用 query_engine，不创建 retriever。
 
     # -------------------------------------------------------------------------
     # 2.2 方案二：常规分块检索（基准 baseline）
@@ -179,23 +182,26 @@ async def main():
 
     # 同样创建一个查询引擎，但没有 postprocessor（因为整块内容本来就是完整的）。
     base_query_engine = base_index.as_query_engine(similarity_top_k=2)
-    base_retriever = base_index.as_retriever(similarity_top_k=2)
 
     # =========================================================================
     # 第 3 步：初始化评估器（LLM-as-a-judge：让大模型当裁判）
     # =========================================================================
-    # 这两个评估器内部会自己构造提示词去问 LLM：
-    #   FaithfulnessEvaluator：把「检索到的原文」和「模型的回答」一起给 LLM，
-    #                          问它回答是否全部有原文支撑 → 返回 passing=True/False + 理由。
-    #   RelevancyEvaluator   ：把「用户问题」「模型的回答」「检索到的原文」给 LLM，
-    #                          问它回答是否切合问题 → 返回 passing=True/False + 理由。
+    # 三个评估器内部都会自己构造提示词去问 LLM，输入输出各不同：
+    #   ① ContextRelevancyEvaluator：吃 query + contexts，问检索片段是否切题。
+    #      裁判问两个子问题，每问 2 分（允许半分），满分 4 分，
+    #      最终 score = 原始分 / score_threshold(默认 4.0) → 0~1。
+    #      不设置 passing 字段 → 统计时算平均分。
+    #   ② FaithfulnessEvaluator：吃 contexts + response，问回答是否被上下文支撑。
+    #      整段回答问一次 YES/NO（注意：是整体判断，不会逐句拆分）。
+    #      返回 passing=True/False → 统计时算通过率。
+    #   ③ AnswerRelevancyEvaluator：吃 query + response，问回答是否切题。
+    #      裁判问两个子问题，每问 1 分，满分 2 分，
+    #      最终 score = 原始分 / score_threshold(默认 2.0) → 0~1。
+    #      不设置 passing 字段 → 统计时算平均分。
     # llm=Settings.llm：显式指定裁判模型（这里也是 deepseek-chat）。
     #   想省钱/更快可以换成更小的模型，但判断质量会下降。
+    context_relevancy_evaluator = ContextRelevancyEvaluator(llm=Settings.llm)
     faithfulness_evaluator = FaithfulnessEvaluator(llm=Settings.llm)
-    relevancy_evaluator = RelevancyEvaluator(llm=Settings.llm)
-    # 答案相关性评估器：裁判模型分别给两个子问题打分，每问 1 分，满分 2 分，
-    # 最终 score = 原始分 / score_threshold(默认 2.0)，所以结果是 0~1。
-    # 注意它「不设置 passing 字段」，统计时要算平均分，不能算通过率。
     answer_relevancy_evaluator = AnswerRelevancyEvaluator(llm=Settings.llm)
 
     # =========================================================================
@@ -203,10 +209,11 @@ async def main():
     # =========================================================================
     print("开始执行响应评估对比...")
     # 把多个评估器打包成 dict，key 会成为结果的键名。
+    # 顺序对应 RAG 三元组的三个阶段：检索 → 生成 → 端到端。
     evaluators = {
-        "faithfulness": faithfulness_evaluator,       # 忠实度（passing 型：True/False）
-        "relevancy": relevancy_evaluator,             # 回答与上下文一致性（passing 型：YES/NO）
-        # "answer_relevancy": answer_relevancy_evaluator,  # 答案相关性（score 型：0~1）
+        "context_relevancy": context_relevancy_evaluator,  # ① 检索是否切题（score 型：0~1）
+        "faithfulness": faithfulness_evaluator,            # ② 回答是否有依据（passing 型：True/False）
+        "answer_relevancy": answer_relevancy_evaluator,    # ③ 回答是否切题（score 型：0~1）
     }
     # queries：评估数据集里的问题列表。
     #   ⚠️ 重要：QueryResponseDataset.queries 的类型是 Dict[str, str]
@@ -214,23 +221,42 @@ async def main():
     #   而 aevaluate_queries 内部是 `for query in queries`，
     #   直接传 dict 遍历到的是「key（题目ID）」，不是问题本身，
     #   结果会拿 UUID 字符串去检索和提问，分数全是垃圾。
-    #   所以必须用 .values() 取出问题文本，再转成 list。
-    queries = list(response_eval_dataset.queries.values())
+    #   所以必须取出问题文本，再转成 list。
+    #
+    # 另外要过滤脏数据：DatasetGenerator 偶尔会把「整段生成输出」当成一道题存进来
+    # （例如 "Based on the provided context..., here are N questions..."），
+    # 这种条目会同时拉低三个指标，评估前必须剔除。
+    def is_valid_query(text: str) -> bool:
+        text = text.strip()
+        if not text or "\n" in text:
+            return False  # 空文本或多行文本，基本是没解析干净的生成输出
+        low = text.lower()
+        if "here are" in low and "questions" in low:
+            return False  # 典型脏数据特征
+        return True
 
-    # 对应的参考答案（同样是 dict，.values() 顺序与 queries 一致，可直接按下标对齐）。
-    # 注意：无参考指标（忠实度 / 一致性 / 答案相关性）用不到它；
+    # 用「题目ID」把问题和参考答案配对后一起过滤。
+    # 这比假设两个 dict 的 .values() 顺序一致更安全——顺序一致只是当前文件的巧合，不是 API 保证。
+    valid_items = [
+        (qid, question, response_eval_dataset.responses.get(qid, ""))
+        for qid, question in response_eval_dataset.queries.items()
+        if is_valid_query(question)
+    ]
+    queries = [question for _, question, _ in valid_items]
+    # 对应的参考答案。注意：三元组的三个指标全部是无参考指标，用不到它；
     # 只有 CorrectnessEvaluator、SemanticSimilarityEvaluator 这类有参考指标才需要。
-    references = list(response_eval_dataset.responses.values())
+    references = [reference for _, _, reference in valid_items]
+    print(f"有效问题数：{len(queries)} / {len(response_eval_dataset.queries)}")
 
     # ---- 方案一的评估 ----
     print("\n=== 评估句子窗口检索 ===")
     # BatchEvalRunner(评估器字典, workers=并发数, show_progress=是否显示进度条)
     #   workers=2：同时最多跑 2 个评估任务。调大会更快，但容易触发 API 限流（429）。
-    sentence_runner = BatchEvalRunner(evaluators, workers=2, show_progress=True)
+    sentence_runner = BatchEvalRunner(evaluators, workers=3, show_progress=True)
     # aevaluate_queries：异步批量评估。
     #   对 queries 里的每个问题，先让 query_engine 生成回答，再用每个评估器打分。
     #   返回值是嵌套 dict，结构大致是：
-    #     {"faithfulness": [EvaluationResult, ...], "relevancy": [EvaluationResult, ...]}
+    #     {"context_relevancy": [...], "faithfulness": [...], "answer_relevancy": [...]}
     #   每个 EvaluationResult 有 .passing（是否通过）、.score、.feedback（裁判给的理由）等字段。
     sentence_response_results = await sentence_runner.aevaluate_queries(
         queries=queries, query_engine=sentence_query_engine
@@ -239,7 +265,7 @@ async def main():
     # ---- 方案二的评估 ----
     print("\n=== 评估常规分块检索 ===")
     # 用同样的评估器、同样的并发数、同样的问题，只换 query_engine —— 保证唯一变量是检索方案。
-    base_runner = BatchEvalRunner(evaluators, workers=2, show_progress=True)
+    base_runner = BatchEvalRunner(evaluators, workers=3, show_progress=True)
     base_response_results = await base_runner.aevaluate_queries(
         queries=queries, query_engine=base_query_engine
     )
@@ -252,13 +278,14 @@ async def main():
     print("="*60)
 
     # 注意：不同评估器的返回字段不一样，所以要两个统计函数。
-    #   - FaithfulnessEvaluator / RelevancyEvaluator → 给的是 passing（True/False）→ 算通过率
-    #   - AnswerRelevancyEvaluator                   → 只给 score（0~1），passing 是 None → 算平均分
+    #   - FaithfulnessEvaluator                      → 给的是 passing（True/False）→ 算通过率
+    #   - ContextRelevancyEvaluator / AnswerRelevancyEvaluator
+    #                                                → 只给 score（0~1），passing 是 None → 算平均分
     # 如果混用，sum(r.passing ...) 遇到 None 会抛 TypeError。
 
     # 函数一：算「通过率」，适用于 passing 型指标
     #   results：BatchEvalRunner 返回的嵌套 dict
-    #   metric ：指标名，比如 "faithfulness" 或 "relevancy"
+    #   metric ：指标名，比如 "faithfulness"
     def calc_pass_rate(results, metric):
         if results and results.get(metric):
             # 只保留真正给出了判定结果的条目（passing 不是 None 的）
@@ -283,44 +310,58 @@ async def main():
             return sum(scores) / len(scores)
         return 0.0
 
-    # 句子窗口检索的三个指标
+    # 句子窗口检索的三个指标（按三元组顺序：检索 → 生成 → 端到端）
+    sentence_ctx_rel = calc_avg_score(sentence_response_results, "context_relevancy")
     sentence_faith = calc_pass_rate(sentence_response_results, "faithfulness")
-    sentence_rel = calc_pass_rate(sentence_response_results, "relevancy")
-    # sentence_ans_rel = calc_avg_score(sentence_response_results, "answer_relevancy")
+    sentence_ans_rel = calc_avg_score(sentence_response_results, "answer_relevancy")
 
     # 常规分块检索的三个指标
+    base_ctx_rel = calc_avg_score(base_response_results, "context_relevancy")
     base_faith = calc_pass_rate(base_response_results, "faithfulness")
-    base_rel = calc_pass_rate(base_response_results, "relevancy")
-    # base_ans_rel = calc_avg_score(base_response_results, "answer_relevancy")
+    base_ans_rel = calc_avg_score(base_response_results, "answer_relevancy")
 
     # f-string 里的 {sentence_faith:.1%} 表示：把 0.8 这样的数格式化成 "80.0%"。
     print(f"\n句子窗口检索:")
-    print(f"  忠实度: {sentence_faith:.1%}")
-    print(f"  一致性: {sentence_rel:.1%}")
-    # print(f"  答案相关性: {sentence_ans_rel:.1%}")
+    print(f"  ① 上下文相关性: {sentence_ctx_rel:.1%}")
+    print(f"  ② 忠实度:       {sentence_faith:.1%}")
+    print(f"  ③ 答案相关性:   {sentence_ans_rel:.1%}")
 
     print(f"\n常规分块检索:")
-    print(f"  忠实度: {base_faith:.1%}")
-    print(f"  一致性: {base_rel:.1%}")
-    # print(f"  答案相关性: {base_ans_rel:.1%}")
+    print(f"  ① 上下文相关性: {base_ctx_rel:.1%}")
+    print(f"  ② 忠实度:       {base_faith:.1%}")
+    print(f"  ③ 答案相关性:   {base_ans_rel:.1%}")
 
     # -------------------------------------------------------------------------
     # 简单对比结论（逐维度比较，统计赢了几项）
     # -------------------------------------------------------------------------
     # 三个维度：(句子窗口分数, 常规分块分数)
     dimensions = {
+        "上下文相关性": (sentence_ctx_rel, base_ctx_rel),
         "忠实度": (sentence_faith, base_faith),
-        "一致性": (sentence_rel, base_rel),
-        # "答案相关性": (sentence_ans_rel, base_ans_rel),
+        "答案相关性": (sentence_ans_rel, base_ans_rel),
     }
+    # 逐维度打印谁赢，方便看出差距出在检索段还是生成段
+    for name, (s_score, b_score) in dimensions.items():
+        if s_score > b_score:
+            flag = "句子窗口领先"
+        elif s_score < b_score:
+            flag = "常规分块领先"
+        else:
+            flag = "持平"
+        print(f"  {name}: {s_score:.1%} vs {b_score:.1%} → {flag}")
+
     # 统计「句子窗口赢」的维度数量
     wins = sum(1 for s, b in dimensions.values() if s > b)
     print(f"\n句子窗口检索在 {wins}/{len(dimensions)} 个维度上领先")
 
+    # 样本量提醒：比例类指标在小样本下波动很大（十几条样本的差异可能只是噪声），
+    # 所以这里只说「高/低」，不说「显著优于」，结论只能当趋势参考。
+    print(f"（样本量 n={len(queries)}，比例类指标在小样本下波动较大，结论仅供参考）")
+
     if wins == len(dimensions):
-        print(f"\n✅ 句子窗口检索在所有维度上都优于常规分块检索")
+        print(f"\n✅ 句子窗口检索在所有维度上都高于常规分块检索")
     elif wins > 0:
-        print(f"\n⚖️  句子窗口检索在某些维度上有优势")
+        print(f"\n⚖️  句子窗口检索在某些维度上更高")
     else:
         print(f"\n❌ 句子窗口检索未显示明显优势")
 
