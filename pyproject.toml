@@ -79,6 +79,7 @@ dependencies = [
     # 多模态图文检索用的本地包（源码在 code/C3/visual_bge），
     # 声明成路径依赖后 `uv sync` 不会再把手动安装的它当"多余包"删掉
     "visual-bge",
+    "spacy>=3.8.18",
 ]
 
 [tool.uv.sources]
