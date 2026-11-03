@@ -162,14 +162,27 @@ query ─→ 检索器 ────┘              │
 
 ## 六、指标分类总表
 
-| 类型 | 需要参考答案？ | LlamaIndex 中的类 | 输出字段 | 用来干什么 |
-|---|---|---|---|---|
-| 无参考（reference-free） | ❌ | `FaithfulnessEvaluator` | `passing` (True/False) | **查幻觉**：回答的每句话是否都能在检索到的原文里找到依据。回答"听着很对但文档里没说"时，这里会挂。 |
-| 无参考（reference-free） | ❌ | `RelevancyEvaluator` | `passing` (YES/NO) | **查串味**：回答是否与检索到的上下文一致。注意名字有误导——它对比的是「回答 vs 上下文」，不评价「问题有没有被回答」，和忠实度高度重叠。 |
-| 无参考（reference-free） | ❌ | `AnswerRelevancyEvaluator` | `score` (0~1) | **查答非所问**：回答是否切中问题本身。完全不看上下文、也不判断对错，只判断"这段文字像不像在回答这个问题"。 |
-| 无参考（reference-free） | ❌ | `ContextRelevancyEvaluator` | `score` (0~1) | **查检索质量**：检索回来的片段是否切题、是否足以回答问题。检索坏了，后面模型再强也救不回来，所以这项要单独盯。 |
-| **有参考（reference-based）** | ✅ | **`CorrectnessEvaluator`** | `score` (0~1) | **查对不对**：把回答与参考答案对比打分。用于版本验收——上线前确认"答案确实是对的"，适合离线回归测试。 |
-| **有参考（reference-based）** | ✅ | **`SemanticSimilarityEvaluator`** | `score` + `passing` | **查像不像**：用向量算回答与参考答案的语义相似度。便宜、快，适合大批量初筛；但只测"意思接不接近"，推理错了但措辞接近照样高分。 |
+| 类型 | 需要参考答案？ | LlamaIndex 中的类 | 输出字段 | 用来干什么 | 对应三元组环节 |
+|---|---|---|---|---|---|
+| 无参考（reference-free） | ❌ | `FaithfulnessEvaluator` | `passing` (True/False) | **查幻觉**：回答的每句话是否都能在检索到的原文里找到依据。回答"听着很对但文档里没说"时，这里会挂。 | **Groundedness**（扎根性） |
+| 无参考（reference-free） | ❌ | `RelevancyEvaluator` | `passing` (YES/NO) | **查串味**：回答是否与检索到的上下文一致。注意名字有误导——它对比的是「回答 vs 上下文」，不评价「问题有没有被回答」，和忠实度高度重叠。 | **Groundedness**（扎根性的弱化版：只给 YES/NO） |
+| 无参考（reference-free） | ❌ | `AnswerRelevancyEvaluator` | `score` (0~1) | **查答非所问**：回答是否切中问题本身。完全不看上下文、也不判断对错，只判断"这段文字像不像在回答这个问题"。 | **Answer Relevance**（答案相关性） |
+| 无参考（reference-free） | ❌ | `ContextRelevancyEvaluator` | `score` (0~1) | **查检索质量**：检索回来的片段是否切题、是否足以回答问题。检索坏了，后面模型再强也救不回来，所以这项要单独盯。 | **Context Relevance**（上下文相关性） |
+| **有参考（reference-based）** | ✅ | **`CorrectnessEvaluator`** | `score` (0~1) | **查对不对**：把回答与参考答案对比打分。用于版本验收——上线前确认"答案确实是对的"，适合离线回归测试。 | |
+| **有参考（reference-based）** | ✅ | **`SemanticSimilarityEvaluator`** | `score` + `passing` | **查像不像**：用向量算回答与参考答案的语义相似度。便宜、快，适合大批量初筛；但只测"意思接不接近"，推理错了但措辞接近照样高分。 | |
+
+> **空白**表示该指标不对应 RAG 三元组的任何环节。
+> 三元组只问三件事——「检索的切题吗」「回答有依据吗」「回答切题吗」，**三者全部不涉及标准答案**；
+> 而 `Correctness` 和 `SemanticSimilarity` 的本质就是「拿回答去和参考答案比」，所以它们天然落在三元组之外（见第 9 节）。
+
+**三元组与指标的一一对应关系：**
+
+| 三元组环节 | 回答的问题 | 对应的 LlamaIndex 指标 |
+|---|---|---|
+| Context Relevance | 检索回来的片段切题吗？ | `ContextRelevancyEvaluator` |
+| Groundedness | 回答有检索内容作依据吗？ | `FaithfulnessEvaluator`；`RelevancyEvaluator`（弱化版） |
+| Answer Relevance | 回答切中问题吗？ | `AnswerRelevancyEvaluator` |
+| —（三元组没有） | 回答到底对不对？ | `CorrectnessEvaluator`、`SemanticSimilarityEvaluator` |
 
 > 注意：`passing` 型指标算**通过率**，`score` 型指标算**平均分**。
 > `AnswerRelevancyEvaluator` 不设置 `passing`（值为 `None`），直接混用会抛 `TypeError`。
@@ -211,13 +224,13 @@ references = list(response_eval_dataset.responses.values())
 
 | 行号 | 内容 |
 |---|---|
-| 206 | `evaluators = {...}` 三个评估器的注册 |
-| 218 | `queries = list(...queries.values())` 取问题文本 |
-| 223 | `references = list(...responses.values())` 取参考答案（当前未使用，为 `Correctness` 预留） |
-| 262 | `calc_pass_rate()` 统计 passing 型指标 |
-| 273 | `calc_avg_score()` 统计 score 型指标 |
-| 287–294 | 两个方案的三项分数计算 |
-| 314 | 三维度对比 |
+| 215 | `evaluators = {...}` 三元组三个评估器的注册 |
+| 227 | `queries = list(...queries.values())` 取问题文本 |
+| 232 | `references = list(...responses.values())` 取参考答案（当前未使用，为 `Correctness` 预留） |
+| 272 | `calc_pass_rate()` 统计 passing 型指标 |
+| 283 | `calc_avg_score()` 统计 score 型指标 |
+| 297–304 | 两个方案的三项分数计算 |
+| 321 | 三维度对比 |
 
 ---
 
